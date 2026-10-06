@@ -8,6 +8,19 @@ remediation, etc.).
 """
 
 import json
+from pathlib import PurePosixPath, PureWindowsPath
+from urllib.parse import quote
+
+
+def _file_uri(file: str) -> str:
+    """Encode a local finding path as a relative reference or absolute file URI."""
+    windows = PureWindowsPath(file)
+    if windows.is_absolute():
+        return windows.as_uri()
+    posix = PurePosixPath(file)
+    if posix.is_absolute():
+        return posix.as_uri()
+    return quote(file.replace("\\", "/"), safe="/")
 
 
 def write_sarif(report, path):
@@ -30,16 +43,19 @@ def write_sarif(report, path):
         result = {
             "ruleId": f["rule_id"],
             "message": {"text": f["message"]},
-            "locations": [
-                {
-                    "physicalLocation": {
-                        "artifactLocation": {"uri": f["file"]},
-                        "region": {"startLine": f["line"]},
-                    }
-                }
-            ],
-            "properties": {"owasp_llm": f.get("owasp_llm")},
+            "level": {
+                "critical": "error", "high": "error", "medium": "warning",
+                "low": "note", "info": "note",
+            }.get(str(f.get("severity", "")).strip().lower(), "warning"),
+            "properties": {"owasp_llm": f.get("owasp_llm"), "severity": f.get("severity")},
         }
+        file = f.get("file")
+        if isinstance(file, str) and file:
+            physical = {"artifactLocation": {"uri": _file_uri(file)}}
+            line = f.get("line")
+            if isinstance(line, int) and not isinstance(line, bool) and line > 0:
+                physical["region"] = {"startLine": line}
+            result["locations"] = [{"physicalLocation": physical}]
         if f.get("fingerprint"):
             result["partialFingerprints"] = {"safeaiFindingFingerprint": f["fingerprint"]}
         if f.get("status"):
@@ -80,5 +96,5 @@ def write_sarif(report, path):
         if finding.get("remediation"):
             props["remediation"] = finding.get("remediation")
 
-    with open(path, "w") as fh:
+    with open(path, "w", encoding="utf-8") as fh:
         json.dump(sarif, fh, indent=2)
